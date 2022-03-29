@@ -727,47 +727,7 @@ doIsDeadAfter(IR *instr, Operand *op, int level, IR **stack)
       return false;
   }
   for (ir = instr->next; ir; ir = ir->next) {
-    for (i = 0; i < level; i++) {
-        if (ir == stack[i]) {
-            // we've come around a loop
-            // registers may be considered dead, labels not
-            return IsRegister(op->kind);
-        }
-    }
-    if (IsDummy(ir)) continue;
-    if (ir->opc == OPC_LABEL) {
-        // potential problem: if there is a branch before instr
-        // that goes to LABEL then we might miss a set
-        // so check
-        IR *comefrom = (IR *)ir->aux;
-        if (ir->flags & FLAG_LABEL_NOJUMP) {
-            // this label isn't a jump target, so don't worry about it
-            continue;
-        }
-        if (!ir->next) {
-            // last label in the function, again, no need to worry
-            continue;
-        }
-        if (!comefrom) {
-            // we don't know what branches come here,
-            // so for caution give up
-            return false;
-        }
-        if (level == 0 && comefrom->addr < instr->addr) {
-            // go back and see if there are any references before the
-            // jump that brought us here
-            // if so, abort
-            IR *backir = comefrom;
-            while (backir) {
-                if (backir->src == op || backir->dst == op) {
-                    return false;
-                }
-                backir = backir->prev;
-            }
-        }
-        continue;
-    }
-    if (InstrUses(ir, op)) {
+    if (InstrUses(ir, op) && !IsDummy(ir)) {
         // value is used, so definitely not dead
         // well, unless the value is used only to update itself:
         // check for that here
@@ -801,7 +761,47 @@ doIsDeadAfter(IR *instr, Operand *op, int level, IR **stack)
         if (ir->src && ir->src->kind == REG_SUBREG) {
             return false;
         }
-    } else if (InstrModifies(ir, op)) {
+    }
+    for (i = 0; i < level; i++) {
+        if (ir == stack[i]) {
+            // we've come around a loop
+            // registers may be considered dead, labels not
+            return IsRegister(op->kind);
+        }
+    }
+    if (ir->opc == OPC_LABEL) {
+        // potential problem: if there is a branch before instr
+        // that goes to LABEL then we might miss a set
+        // so check
+        IR *comefrom = (IR *)ir->aux;
+        if (ir->flags & FLAG_LABEL_NOJUMP) {
+            // this label isn't a jump target, so don't worry about it
+            continue;
+        }
+        if (!ir->next) {
+            // last label in the function, again, no need to worry
+            continue;
+        }
+        if (!comefrom) {
+            // we don't know what branches come here,
+            // so for caution give up
+            return false;
+        }
+        if (level == 0 && comefrom->addr < instr->addr) {
+            // go back and see if there are any references before the
+            // jump that brought us here
+            // if so, abort
+            IR *backir = comefrom;
+            while (backir) {
+                if (backir->src == op || backir->dst == op) {
+                    return false;
+                }
+                backir = backir->prev;
+            }
+        }
+        continue;
+    }
+    if (InstrModifies(ir, op) && !InstrUses(ir,op) && !IsDummy(ir)) {
         // if the instruction modifies but does not use the op,
         // then we're setting it from another register and it's dead
         if (op->kind == REG_SUBREG) {
@@ -816,7 +816,7 @@ doIsDeadAfter(IR *instr, Operand *op, int level, IR **stack)
     }
     if (ir->opc == OPC_RET && ir->cond == COND_TRUE) {
       goto done;
-    } else if (ir->opc == OPC_CALL) {
+    } else if (ir->opc == OPC_CALL && !IsDummy(ir)) {
         if (!IsLocal(op)) {
             // we know of some special cases where argN is not used
             if (IsArg(op) && !FuncUsesArg(ir->dst, op)) {
@@ -827,7 +827,7 @@ doIsDeadAfter(IR *instr, Operand *op, int level, IR **stack)
                 return false;
             }
         }
-    } else if (IsJump(ir)) {
+    } else if (IsJump(ir) && !IsDummy(ir)) {
         // if the jump is to an unknown place give up
         if (!ir->aux) {
             // jump to return is like running off the end
@@ -959,12 +959,13 @@ SrcOnlyHwReg(Operand *orig)
 // or NULL if replacement is unsafe
 //
 static IR*
-SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
+SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace, IRCond setterCond)
 {
   IR *ir;
   IR *last_ir = NULL;
   bool assignments_are_safe = true;
   bool orig_modified = false;
+  bool isCond = (setterCond != COND_TRUE);
   
   if (SrcOnlyHwReg(replace) || !IsRegister(replace->kind)) {
       return NULL;
@@ -982,7 +983,7 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
   // special case: if orig is dead after this,
   // and if first_ir does not modify it, then it is safe to
   // replace
-  if (!IsBranch(first_ir) && IsDeadAfter(first_ir, orig) && !InstrModifies(first_ir, orig)) {
+  if (!IsBranch(first_ir) && IsDeadAfter(first_ir, orig) && !InstrModifies(first_ir, orig) && !isCond) {
       return first_ir;
   }
 #endif  
@@ -1004,7 +1005,7 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
         return NULL;
     }
     if (ir->opc == OPC_RET) {
-        return IsLocalOrArg(orig) ? ir : NULL;
+        return (IsLocalOrArg(orig) && !isCond) ? ir : NULL;
     } else if (ir->opc == OPC_CALL) {
         // it's OK to replace forward over a call as long
         // as orig is a local register (not an ARG!)
@@ -1020,7 +1021,7 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
                 // if there are any more references to orig then
                 // replacement will fail (since arg gets changed
                 // by the call)
-                return (assignments_are_safe && IsDeadAfter(ir, orig)) ? ir : NULL;
+                return (assignments_are_safe && IsDeadAfter(ir, orig) && !isCond) ? ir : NULL;
             }
         } else if (!IsLocal(replace)) {
             return NULL;
@@ -1031,14 +1032,18 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
         // will cause problems
         // Note though that if we do branch ahead then
         // we cannot assume that assignments are safe!
-        if (!JumpIsAfterOrEqual(first_ir, ir)) {
-            return NULL;
-        }
-        if (assignments_are_safe && IsForwardJump(ir) && ir->aux) {
-            IR *jmpdst = (IR *)ir->aux;
-            assignments_are_safe = IsDeadAfter(jmpdst, orig);
+        if (ir->aux && IsDeadAfter((IR *)ir->aux,replace) && IsDeadAfter((IR *)ir->aux,orig)) {
+            // both regs are dead after branch, so we don't care
         } else {
-            assignments_are_safe = false;
+            if (!JumpIsAfterOrEqual(first_ir, ir)) {
+                return NULL;
+            }
+            if (assignments_are_safe && IsForwardJump(ir) && ir->aux) {
+                IR *jmpdst = (IR *)ir->aux;
+                assignments_are_safe = IsDeadAfter(jmpdst, orig);
+            } else {
+                assignments_are_safe = false;
+            }
         }
     }
     if (ir->opc == OPC_LABEL) {
@@ -1056,7 +1061,7 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
             // however, in the special case that the register is never
             // actually used again then it's safe
             if (comefrom->addr < first_ir->addr) {
-                if (assignments_are_safe && IsDeadAfter(ir, orig)) {
+                if (assignments_are_safe && IsDeadAfter(ir, orig) && !isCond) {
                     return ir;
                 }
                 return NULL;
@@ -1067,6 +1072,9 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
             return NULL;
         }
     }
+    if (!CondIsSubset(setterCond,ir->cond) && InstrUses(ir,orig)) {
+        return NULL;
+    }
     if (InstrModifies(ir,replace)) {
       // special case: if we have a "mov replace,x" and orig is dead
       // then we are good to go; at that point we know it is safe to replace
@@ -1076,7 +1084,7 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
       //      value is being put into it
       //  if "assignments_are_safe" is false then we don't know if another
       //  branch might still use "replace", so punt and give up
-      if (ir->cond != COND_TRUE) {
+      if (!CondIsSubset(ir->cond,setterCond)) {
           return NULL;
       }
       if (ir->dst->kind == REG_SUBREG || replace->kind == REG_SUBREG) {
@@ -1107,8 +1115,12 @@ SafeToReplaceForward(IR *first_ir, Operand *orig, Operand *replace)
             // sub registers are complicated, punt
             return NULL;
         }
-        if (ir->cond != COND_TRUE) {
+        if (ir->cond != setterCond) {
             assignments_are_safe = false;
+            if (!CondIsSubset(setterCond,ir->cond)) {
+                // Not a subset of the setter condition, can't replace
+                return NULL;
+            }
         }
         if (!InstrUses(ir, orig) && assignments_are_safe) {
             // we are completely re-setting "orig" here, so we can just
@@ -1790,16 +1802,16 @@ OptimizeMoves(IRList *irl)
                     // we no longer need the original mov
                     DeleteIR(irl, ir);
                 }
-            } else if (ir->opc == OPC_MOV && ir->cond == COND_TRUE) {
+            } else if (ir->opc == OPC_MOV) {
                 if (ir->src == ir->dst && !InstrSetsAnyFlags(ir)) {
                     DeleteIR(irl, ir);
                     change = 1;
-                } else if (!InstrSetsAnyFlags(ir) && IsDeadAfter(ir, ir->src) && SafeToReplaceBack(ir->prev, ir->src, ir->dst)) {
+                } else if (!InstrSetsAnyFlags(ir) && ir->cond == COND_TRUE && IsDeadAfter(ir, ir->src) && SafeToReplaceBack(ir->prev, ir->src, ir->dst)) {
                     ReplaceBack(ir->prev, ir->src, ir->dst);
                     DeleteIR(irl, ir);
                     change = 1;
                 }
-                else if ( !InstrSetsAnyFlags(ir) && 0 != (stop_ir = SafeToReplaceForward(ir->next, ir->dst, ir->src)) ) {
+                else if ( !InstrSetsAnyFlags(ir) && 0 != (stop_ir = SafeToReplaceForward(ir->next, ir->dst, ir->src,ir->cond)) ) {
                     ReplaceForward(ir->next, ir->dst, ir->src, stop_ir);
                     DeleteIR(irl, ir);
                     change = 1;
@@ -2078,49 +2090,42 @@ static void CheckUsage(IRList *irl)
  * returns the number of instructions forward
  * or 0 if not a valid candidate for optimization
  */
-#define MAX_JUMP_OVER 3
-static int IsSafeShortForwardJump(IR *irbase)
-{
-  int n = 0;
-  Operand *target;
-  IR *ir;
+static int IsSafeShortForwardJump(IR *irbase) {
+    int n = 0;
+    Operand *target;
+    IR *ir;
+    int limit = (curfunc->optimize_flags & OPT_EXTRASMALL) ? 10 : (gl_p2 ? 5 : 3);
+    bool cond_dirty = false;
 
-  if (irbase->opc != OPC_JUMP)
-    return 0;
-  if (InstrIsVolatile(irbase)) {
-      return 0;
-  }
-  target = irbase->dst;
-  if (IsRegister(target->kind)) {
-      return 0;
-  }
-  ir = irbase->next;
-  while (ir) {
-    if (!IsDummy(ir)) {
-      if (ir->cond != COND_TRUE) return 0;
-      if (ir->opc == OPC_LABEL) {
-	if (ir->dst == target) {
-	  return n;
-	}
-	return 0;
-      }
-      if (ir->opc == OPC_CALL) {
-          // calls do not preserve condition codes
-          return 0;
-      }
-      if (ir->opc == OPC_DJNZ && !gl_p2) {
-          // DJNZ does not work conditionally in LMM
-          return 0;
-      }
-      n++;
-      if (n > MAX_JUMP_OVER) return 0;
+    if (irbase->opc != OPC_JUMP) return 0;
+    if (InstrIsVolatile(irbase)) return 0;
+    target = irbase->dst;
+    if (IsRegister(target->kind)) return 0;
+    ir = irbase->next;
+    while (ir) {
+        if (!IsDummy(ir)) {
+            if (ir->cond != COND_TRUE) return 0;
+            if (ir->opc == OPC_LABEL) {
+                if (ir->dst == target) return n;
+                else return 0;
+            }
+            if (cond_dirty) return 0;
+            if (ir->flags & FLAG_CZSET) cond_dirty = true;
+            if (ir->opc == OPC_CALL) {
+                // calls do not preserve condition codes
+                cond_dirty = true;
+            }
+            if (ir->opc == OPC_DJNZ && !gl_p2) {
+                // DJNZ does not work conditionally in LMM
+                return 0;
+            }
+            if (++n > limit) return 0;
+        }
+        ir = ir->next;
     }
-    ir = ir->next;
-  }
-  // we reached the end... were we trying to jump to the end?
-  if (curfunc && target == FuncData(curfunc)->asmreturnlabel)
-      return n;
-  return 0;
+    // we reached the end... were we trying to jump to the end?
+    if (curfunc && target == FuncData(curfunc)->asmreturnlabel) return n;
+    else return 0;
 }
 
 static void ConditionalizeInstructions(IR *ir, IRCond cond, int n)
@@ -3741,6 +3746,13 @@ static void PrependDependency(struct dependency **list,Operand *reg) {
     *list = tmp;
 }
 
+static bool CheckDependency(struct dependency **list, Operand *reg) {
+    for (struct dependency *tmp=*list;tmp;tmp=tmp->link) {
+        if (tmp->reg == reg) return true;
+    }
+    return false;
+}
+
 static void DeleteDependencies(struct dependency **list,Operand *reg) {
     struct dependency **prevlink = list;
     for (struct dependency *tmp=*list;tmp;) {
@@ -4047,6 +4059,42 @@ FixupLoneCORDIC(IRList *irl) {
     return change;
 }
 
+static void addKnownReg(struct dependency **list, Operand *op, bool arg) {
+    if (op && op->kind != REG_SUBREG && (arg?IsArg(op):IsLocal(op)) && !CheckDependency(list,op)) PrependDependency(list,op);
+}
+
+static bool
+ReuseLocalRegisters(IRList *irl) {
+    struct dependency *known_regs = NULL;
+    bool change = false;
+    IR *stop_ir;
+
+    for(IR *ir=irl->head;ir;ir=ir->next) {
+        // Find all the arg regs first
+        addKnownReg(&known_regs,ir->src,true);
+        addKnownReg(&known_regs,ir->dst,true);
+    }
+
+    for (IR *ir=irl->head;ir;ir=ir->next) {
+        // Start of new dependency chain
+        if (ir->dst && ir->dst != ir->src && IsLocal(ir->dst) && ir->dst->kind != REG_SUBREG && InstrModifies(ir,ir->dst) && !InstrUses(ir,ir->dst) && !CheckDependency(&known_regs,ir->dst)) {
+            for (struct dependency *tmp=known_regs;tmp;tmp=tmp->link) {
+                if (tmp->reg!=ir->dst && IsDeadAfter(ir,tmp->reg) && (stop_ir = SafeToReplaceForward(ir->next,ir->dst,tmp->reg,ir->cond))) {
+                    //DEBUG(NULL,"Using %s instead of %s",tmp->reg->name,ir->dst->name);
+                    ReplaceForward(ir->next,ir->dst,tmp->reg,stop_ir);
+                    ir->dst = tmp->reg;
+                    change = true;
+                    break;
+                }
+            }
+        }
+        // Collect known registers
+        addKnownReg(&known_regs,ir->src,false);
+        addKnownReg(&known_regs,ir->dst,false);
+    }
+    return change;
+}
+
 
 // optimize an isolated piece of IRList
 // (typically a function)
@@ -4107,6 +4155,10 @@ again:
     if (change) goto again;
     if (gl_p2 && (flags & OPT_CORDIC_REORDER)) {
         change = OptimizeCORDIC(irl);
+    }
+    if (change) goto again;
+    if (flags & OPT_LOCAL_REUSE) {
+        change = ReuseLocalRegisters(irl);
     }
     if (change) goto again;
 }
