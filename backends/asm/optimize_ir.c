@@ -69,6 +69,7 @@ InstrReadsDst(IR *ir)
   case OPC_GETQY:
   case OPC_GETRND:
   case OPC_GETCT:
+  case OPC_GETNIB:
   case OPC_GETBYTE:
   case OPC_GETWORD:
   case OPC_WRC:
@@ -575,6 +576,137 @@ IsMathInstr(IR *ir)
     case OPC_SHL:
     case OPC_SHR:
     case OPC_SAR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool
+IsSrcBitIndex(IR *ir)
+{
+    switch (ir->opc) {
+    case OPC_SHL:
+    case OPC_SHR:
+    case OPC_SAR:
+    case OPC_ROL:
+    case OPC_ROR:
+    case OPC_RCL:
+    case OPC_RCR:
+    case OPC_TESTB:
+    case OPC_TESTBN:
+    case OPC_ZEROX:
+    case OPC_SIGNX:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool
+isConstMove(IR *ir, int32_t *valout) {
+    if (!ir->src || !IsImmediate(ir->src)) return false;
+    int32_t val = (int32_t)ir->src->val;
+    switch (ir->opc) {
+    case OPC_MOV:
+        break;
+    case OPC_NEG:
+        val = -val;
+        break;
+    case OPC_ABS:
+        if (val<0) val = -val;
+        break;
+    case OPC_DECOD:
+        val = 1<<(val&31);
+        break;
+    case OPC_BMASK:
+        val = (2<<(val&31))-1;
+        break;
+    case OPC_GETNIB:
+        val = (val>>(ir->src2->val*4))&0xF;
+    case OPC_GETBYTE:
+        val = (val>>(ir->src2->val*4))&0xFF;
+    case OPC_GETWORD:
+        val = (val>>(ir->src2->val*4))&0xFFFF;
+        break;
+    default:
+        return false;
+    }
+    if (valout) *valout = val;
+    return true;
+}
+
+static int32_t EvalP2BitMask(int x) {
+    int32_t val = (2<<((x>>5)&31))-1;
+    val = val<<(x&31) | val>>((32-x)&31);
+    return val;
+}
+
+static bool
+isMaskingOp(IR *ir, int32_t *maskout) {
+    if (!ir->src) return false;
+    int32_t mask;
+    if (IsImmediate(ir->src)) {
+        mask = (int32_t)ir->src->val;
+        switch (ir->opc) {
+        case OPC_AND:
+            break;
+        case OPC_ANDN:
+            mask = ~mask;
+            break;
+        case OPC_ZEROX:
+            mask = (2<<(mask&31))-1;
+            break;
+        case OPC_BITL:
+            mask = EvalP2BitMask(mask);
+            break;
+        default:
+            return false;
+        }
+    } else if (ir->src == ir->dst) {
+        switch (ir->opc) {
+        case OPC_GETNIB:
+            if (!IsImmediateVal(ir->src2,0)) return false;
+            mask = 0xF;
+            break;
+        case OPC_GETBYTE:
+            if (!IsImmediateVal(ir->src2,0)) return false;
+            mask = 0xFF;
+            break;
+        case OPC_GETWORD:
+            if (!IsImmediateVal(ir->src2,0)) return false;
+            mask = 0xFFFF;
+            break;
+        default:
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if (maskout) *maskout = mask;
+    return true;
+}
+
+// Is this an op that moves data from S to D in some manner?
+// For all of these InstrReadsDst is false
+static bool
+isMoveLikeOp(IR *ir) {
+    switch (ir->opc) {
+    case OPC_MOV:
+    case OPC_NEG:
+    case OPC_ABS:
+    case OPC_NOT:
+    case OPC_ENCOD:
+    case OPC_DECOD:
+    case OPC_ONES:
+    case OPC_BMASK:
+    case OPC_NEGC:
+    case OPC_NEGNC:
+    case OPC_NEGZ:
+    case OPC_NEGNZ:
+    case OPC_GETNIB:
+    case OPC_GETBYTE:
+    case OPC_GETWORD:
         return true;
     default:
         return false;
@@ -1302,13 +1434,13 @@ TransformConstDst(IR *ir, Operand *imm)
   }
   if (imm->kind == IMM_INT && imm->val == 0) {
       // transform add foo, bar into mov foo, bar, if foo is known to be 0
-      if ((ir->opc == OPC_ADD || ir->opc == OPC_SUB)
+      if ((ir->opc == OPC_ADD || ir->opc == OPC_SUB || ir->opc == OPC_OR || ir->opc == OPC_XOR)
           && (ir->flags == FLAG_WZ || !InstrSetsAnyFlags(ir)))
       {
-          if (ir->opc == OPC_ADD) {
-              ReplaceOpcode(ir, OPC_MOV);
-          } else if (ir->opc == OPC_SUB) {
+          if (ir->opc == OPC_SUB) {
               ReplaceOpcode(ir, OPC_NEG);
+          } else {
+              ReplaceOpcode(ir, OPC_MOV);
           }
           return 1;
       }
@@ -1344,6 +1476,9 @@ TransformConstDst(IR *ir, Operand *imm)
     case OPC_SUB:
       val1 -= val2;
       break;
+    case OPC_TEST:
+      setsResult = false;
+      // fall through
     case OPC_AND:
       val1 &= val2;
       break;
@@ -1353,6 +1488,9 @@ TransformConstDst(IR *ir, Operand *imm)
     case OPC_XOR:
       val1 ^= val2;
       break;
+    case OPC_TESTN:
+      setsResult = false;
+      // fall through
     case OPC_ANDN:
       val1 &= ~val2;
       break;
@@ -1364,6 +1502,14 @@ TransformConstDst(IR *ir, Operand *imm)
       break;
     case OPC_SHR:
       val1 = ((uint32_t)val1) >> (val2&31);
+      break;
+    case OPC_ZEROX:
+      val2 = 31-(val2&31);
+      val1 = ((uint32_t)val1<<val2)>>val2;
+      break;
+    case OPC_SIGNX:
+      val2 = 31-(val2&31);
+      val1 = ((int32_t)val1<<val2)>>val2;
       break;
     case OPC_CMPS:
       val1 -= val2;
@@ -1378,6 +1524,16 @@ TransformConstDst(IR *ir, Operand *imm)
           val1 = 1;
       }
       setsResult = 0;
+      break;
+    case OPC_TESTBN:
+      setsResult = false;
+      // Z is set if bit is CLEAR
+      val1 = val1 & (1<<(val2&31));
+      break;
+    case OPC_TESTB:
+      setsResult = false;
+      // Z is set if bit is SET
+      val1 = ~val1 & (1<<(val2&31));
       break;
     default:
       return 0;
@@ -1429,10 +1585,12 @@ PropagateConstForward(IRList *irl, IR *orig_ir, Operand *orig, Operand *immval)
   IR *ir;
   int change = 0;
   bool unconditional;
-
-  if (orig_ir->opc == OPC_NEG) {
-      immval = NewImmediate(-immval->val);
+  int32_t tmp;
+  if (!isConstMove(orig_ir,&tmp)) ERROR(NULL,"isConstMove == false in PropagateConstForward");
+  if (immval->val != tmp) {
+      immval = NewImmediate(tmp);
   }
+
   unconditional = IsOnlySetterFor(irl, orig_ir, orig);
   for (ir = orig_ir->next; ir; ir = ir->next) {
     if (IsDummy(ir)) {
@@ -1709,7 +1867,7 @@ FindPrevSetterForReplace(IR *irorig, Operand *dst)
     // until irorig
     saveir = ir;
     ir = ir->next;
-    while (ir && ir != saveir) {
+    while (ir && ir != irorig) {
         if (IsDummy(ir)) {
             ir = ir->next;
             continue;
@@ -1766,6 +1924,7 @@ OptimizeMoves(IRList *irl)
     IR *stop_ir;
     int change;
     int everchange = 0;
+    int32_t cval;
 
     do {
         change = 0;
@@ -1790,12 +1949,12 @@ OptimizeMoves(IRList *irl)
                         change = 1;
                     }
                 }
-            } else if ((ir->opc == OPC_MOV || ir->opc == OPC_NEG) && ir->cond == COND_TRUE && IsImmediate(ir->src)) {
+            } else if (ir->cond == COND_TRUE && isConstMove(ir,&cval)) {
                 int sawchange;
-                if (ir->flags == FLAG_WZ) {
+                if (ir->flags == FLAG_WZ && CanTestZero(ir->opc)) {
                     // because this is a mov immediate, we know how
                     // WZ will be set
-                    change |= ApplyConditionAfter(ir, ir->src->val);
+                    change |= ApplyConditionAfter(ir, cval);
                 }
                 change |= (sawchange = PropagateConstForward(irl, ir, ir->dst, ir->src));
                 if (sawchange && !InstrSetsAnyFlags(ir) && IsDeadAfter(ir, ir->dst)) {
@@ -1816,6 +1975,11 @@ OptimizeMoves(IRList *irl)
                     DeleteIR(irl, ir);
                     change = 1;
                 }
+            } else if (isMoveLikeOp(ir) && (stop_ir = FindPrevSetterForReplace(ir,ir->src)) && stop_ir->opc == OPC_MOV 
+                && !InstrIsVolatile(stop_ir) && !InstrSetsAnyFlags(stop_ir) && (ir->src==ir->dst||IsDeadAfter(ir,ir->src))) {
+                ir->src = stop_ir->src;
+                DeleteIR(irl,stop_ir);
+                change = 1;
             }
             ir = ir_next;
         }
@@ -1942,8 +2106,30 @@ MeaninglessMath(IR *ir)
     case OPC_SHL:
     case OPC_SHR:
     case OPC_SAR:
+    case OPC_ROL:
+    case OPC_ROR:
+    case OPC_RCL:
+    case OPC_RCR:
     case OPC_OR:
+    case OPC_XOR:
+    case OPC_ANDN:
+    case OPC_MUXC:
+    case OPC_MUXNC:
+    case OPC_MUXZ:
+    case OPC_MUXNZ:
+    case OPC_MINU:
         return (val == 0);
+    case OPC_ZEROX:
+    case OPC_SIGNX:
+        return (val == 31);
+    case OPC_AND:
+        return (val == -1);
+    case OPC_MAXU:
+        return (val == UINT32_MAX);
+    case OPC_MINS:
+        return (val == INT32_MIN);
+    case OPC_MAXS:
+        return (val == INT32_MAX);
     default:
         return false;
     }
@@ -2326,12 +2512,15 @@ OptimizeImmediates(IRList *irl)
         if (! (src && src->kind == IMM_INT) ) {
             continue;
         }
-        if (!gl_p2 && (src->name == NULL || src->name[0] == 0)) {
+        val = src->val;
+        if (val != (val&31) && IsSrcBitIndex(ir)) {
+            // always cut unused bits when immediate is a bit index
+            ir->src = NewImmediate(val&31);
+            change++;
+        } else if (!gl_p2 && (src->name == NULL || src->name[0] == 0)) {
             /* already a small immediate */
             continue;
-        }
-        val = src->val;
-        if (ir->opc == OPC_MOV && val < 0 && val >= -511) {
+        } else if (ir->opc == OPC_MOV && val < 0 && val >= -511) {
 	    ReplaceOpcode(ir, OPC_NEG);
             ir->src = NewImmediate(-val);
             change++;
@@ -2347,7 +2536,7 @@ OptimizeImmediates(IRList *irl)
 	    ReplaceOpcode(ir, OPC_ADD);
             ir->src = NewImmediate(-val);
             change++;
-	}
+	    }
     }
     return change;
 }
@@ -2968,6 +3157,54 @@ OptimizePeepholes(IRList *irl)
             goto done;
         }
 
+        int32_t tmp;
+        // AND -> GET* optimization
+        if (gl_p2 && isMaskingOp(ir,&tmp) && !InstrSetsAnyFlags(ir)) {
+            IROpcode getopc;
+            int shift;
+            switch (tmp) {
+            case 0xF:
+                getopc = OPC_GETNIB;
+                shift = 2;
+                break;
+            case 0xFF:
+                getopc = OPC_GETBYTE;
+                shift = 3;
+                break;
+            case 0xFFFF:
+                getopc = OPC_GETWORD;
+                shift = 4;
+                break;
+            default: goto no_getx;
+            }
+            IR *previr;
+            int which = 0;
+            previr = FindPrevSetterForReplace(ir,ir->dst);
+            if (previr && (previr->opc == OPC_SHR || previr->opc == OPC_SAR) 
+            && !InstrSetsAnyFlags(ir) && previr->src->kind == IMM_INT 
+            && (previr->src->val & ((1<<shift)-1)) == 0) {
+                which = (previr->src->val&31)>>shift;
+                DeleteIR(irl,previr);
+                changed = 1;
+            } else if (previr && previr->opc == getopc) {
+                // No-op
+                ir->cond = COND_FALSE;
+                changed = 1;
+                goto done;
+            }
+            if (ir->opc != getopc) {
+                ReplaceOpcode(ir,getopc);
+                changed = 1;
+            }
+            if (!ir->src2 || !IsImmediateVal(ir->src2,which)) {
+                ir->src2 = NewImmediate(which);
+                changed = 1;
+            }
+            ir->src = ir->dst;
+            goto done;
+        }
+        no_getx:
+
         // on P2, check for immediate operand with just one bit set
         if (gl_p2 && ir->src && ir->src->kind == IMM_INT && !InstrSetsAnyFlags(ir) && ((uint32_t)ir->src->val) > 511) {
             if (ir->opc == OPC_AND) { 
@@ -3531,15 +3768,15 @@ restart_check:
             }
         } 
         if (ir->opc == OPC_RDBYTE || ir->opc == OPC_RDWORD) {
+            int32_t mval;
             dst1 = ir->dst;
             int mask = ir->opc == OPC_RDBYTE ? 0xFF : 0xFFFF;
             nextread = FindNextUse(ir, dst1);
             if (nextread
-                && nextread->opc == OPC_AND
                 && nextread->dst == dst1
-                && IsImmediate(nextread->src)
                 && !InstrSetsAnyFlags(nextread)
-                && nextread->src->val == mask)
+                && isMaskingOp(nextread,&mval)
+                && mval == mask)
             {
                 // don't need zero extend after rdbyte
                 change = 1;
@@ -4731,38 +4968,6 @@ static PeepholePattern pat_movadd[] = {
     { 0, 0, 0, 0, PEEP_FLAGS_DONE }
 };
 
-// potentially eliminate a redundant mov+neg sequence
-static PeepholePattern pat_movneg[] = {
-    { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_NONE },
-    { COND_TRUE, OPC_NEG, PEEP_OP_SET|2, PEEP_OP_MATCH|0, PEEP_FLAGS_WCZ_OK },
-    { 0, 0, 0, 0, PEEP_FLAGS_DONE }
-};
-static PeepholePattern pat_movabs[] = {
-    { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_NONE },
-    { COND_TRUE, OPC_ABS, PEEP_OP_SET|2, PEEP_OP_MATCH|0, PEEP_FLAGS_WCZ_OK },
-    { 0, 0, 0, 0, PEEP_FLAGS_DONE }
-};
-static PeepholePattern pat_movnegc[] = {
-    { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_NONE },
-    { COND_TRUE, OPC_NEGC, PEEP_OP_SET|2, PEEP_OP_MATCH|0, PEEP_FLAGS_WCZ_OK },
-    { 0, 0, 0, 0, PEEP_FLAGS_DONE }
-};
-static PeepholePattern pat_movnegnc[] = {
-    { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_NONE },
-    { COND_TRUE, OPC_NEGNC, PEEP_OP_SET|2, PEEP_OP_MATCH|0, PEEP_FLAGS_WCZ_OK },
-    { 0, 0, 0, 0, PEEP_FLAGS_DONE }
-};
-static PeepholePattern pat_movnegz[] = {
-    { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_NONE },
-    { COND_TRUE, OPC_NEGZ, PEEP_OP_SET|2, PEEP_OP_MATCH|0, PEEP_FLAGS_WCZ_OK },
-    { 0, 0, 0, 0, PEEP_FLAGS_DONE }
-};
-static PeepholePattern pat_movnegnz[] = {
-    { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_NONE },
-    { COND_TRUE, OPC_NEGNZ, PEEP_OP_SET|2, PEEP_OP_MATCH|0, PEEP_FLAGS_WCZ_OK },
-    { 0, 0, 0, 0, PEEP_FLAGS_DONE }
-};
-
 
 // replace mov x, #2; shl x, y; sub x, #1  with bmask x, y
 static PeepholePattern pat_bmask1[] = {
@@ -4901,6 +5106,7 @@ static PeepholePattern pat_setne[] = {
     { COND_NE,  OPC_MOV, PEEP_OP_MATCH|0, PEEP_OP_IMM|1, PEEP_FLAGS_P2 },
     { 0, 0, 0, 0, PEEP_FLAGS_DONE }
 };
+#if 0
 static PeepholePattern pat_sar24getbyte[] = {
     { COND_TRUE, OPC_MOV, PEEP_OP_SET|0, PEEP_OP_SET|1, PEEP_FLAGS_P2 },
     { COND_TRUE, OPC_SAR, PEEP_OP_MATCH|0, PEEP_OP_IMM|24, PEEP_FLAGS_P2 },
@@ -4949,7 +5155,7 @@ static PeepholePattern pat_shr16getword[] = {
     { COND_TRUE, OPC_BITL, PEEP_OP_MATCH|0, PEEP_OP_IMM|0xffff, PEEP_FLAGS_P2 },
     { 0, 0, 0, 0, PEEP_FLAGS_DONE }
 };
-
+#endif
 static PeepholePattern pat_shl8setbyte[] = {
     { COND_TRUE, OPC_SHL, PEEP_OP_SET|0, PEEP_OP_IMM|8, PEEP_FLAGS_P2 },
     { COND_TRUE, OPC_BITL, PEEP_OP_SET|1, PEEP_OP_IMM|(8+(7<<5)), PEEP_FLAGS_P2 },
@@ -5200,16 +5406,6 @@ static int FixupMovAdd(int arg, IRList *irl, IR *ir)
     return 0;
 }
 
-/* mov x, y; neg x, x => neg x, y */
-static int FixupMovNeg(int arg, IRList *irl, IR *ir)
-{
-    IR *nextir = ir->next;
-    if (nextir->dst != nextir->src && !IsDeadAfter(nextir,nextir->src)) return 0;
-    nextir->src = ir->src;
-    DeleteIR(irl, ir);
-    return 1;
-}
-
 /* mov x, #0 ; test x, #1 wc => mov x, #0 wc */
 static int FixupClrC(int arg, IRList *irl, IR *ir)
 {
@@ -5249,7 +5445,7 @@ static int FixupSetC(int arg, IRList *irl, IR *ir)
 
 // mov x, y; shr x, #N; and x, #255 => getbyte x, y, #N/8
 // mov x, y; shr x, #N; and x, #65535 => getword x, y, #N/16
-
+#if 0
 static int FixupGetByteWord(int arg, IRList *irl, IR *ir0)
 {
     IR *ir1 = ir0->next;
@@ -5280,6 +5476,7 @@ static int FixupGetByteWord(int arg, IRList *irl, IR *ir0)
     DeleteIR(irl, ir2);
     return 1;
 }
+#endif
 // shl x, #N; and y, #MASK; or y, x => setbyte y, x, #N/8
 
 static int FixupSetByteWord(int arg, IRList *irl, IR *ir0)
@@ -5550,13 +5747,6 @@ struct Peepholes {
 
     { pat_movadd, 0, FixupMovAdd },
 
-    { pat_movneg, 0, FixupMovNeg },
-    { pat_movabs, 0, FixupMovNeg },
-    { pat_movnegc, 0, FixupMovNeg },
-    { pat_movnegnc, 0, FixupMovNeg },
-    { pat_movnegz, 0, FixupMovNeg },
-    { pat_movnegnz, 0, FixupMovNeg },
-
     { pat_bmask1, 0, FixupBmask },
     { pat_bmask2, 0, FixupBmask },
 
@@ -5564,7 +5754,7 @@ struct Peepholes {
     
     { pat_seteq, OPC_WRZ, FixupEq },
     { pat_setne, OPC_WRNZ, FixupEq },
-
+#if 0
     { pat_sar24getbyte, OPC_GETBYTE, FixupGetByteWord },
     { pat_shr24getbyte, OPC_GETBYTE, FixupGetByteWord },
     { pat_sar16getbyte, OPC_GETBYTE, FixupGetByteWord },
@@ -5574,7 +5764,7 @@ struct Peepholes {
 
     { pat_sar16getword, OPC_GETWORD, FixupGetByteWord },
     { pat_shr16getword, OPC_GETWORD, FixupGetByteWord },
-
+#endif
     { pat_shl8setbyte, OPC_SETBYTE, FixupSetByteWord },
     { pat_shl16setbyte, OPC_SETBYTE, FixupSetByteWord },
     { pat_shl24setbyte, OPC_SETBYTE, FixupSetByteWord },
