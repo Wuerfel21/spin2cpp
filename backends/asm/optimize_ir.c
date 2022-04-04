@@ -4475,10 +4475,9 @@ static bool IsPollInstruction(IR *ir) {
     } else {
         // Too lazy to add all of these as proper OPCs, this'll do.
         if (!InstrSetsAnyFlags(ir)) return false;
-        if (!strncmp(ir->instr->name,"lock",4)) gotVolatileValue=true;
-        if (!strncmp(ir->instr->name,"testp",5)) gotVolatileValue=true;
-        if (!strncmp(ir->instr->name,"poll",4)) gotVolatileValue=true;
-        NOTE(NULL,"checked instr is %s",ir->instr->name);
+        else if (!strncmp(ir->instr->name,"lock",4)) gotVolatileValue=true;
+        else if (!strncmp(ir->instr->name,"testp",5)) gotVolatileValue=true;
+        else if (!strncmp(ir->instr->name,"poll",4)) gotVolatileValue=true;
     }
     if (gotVolatileValue && InstrSetsAnyFlags(ir)) return true;
     if (ir->next && InstrSetsDst(ir) && (ir->next->src == ir->dst || ir->next->dst == ir->dst) && InstrSetsAnyFlags(ir->next)) return true;
