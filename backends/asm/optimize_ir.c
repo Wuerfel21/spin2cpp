@@ -4465,24 +4465,30 @@ ExpandInlines(IRList *irl)
     return change;
 }
 
-static bool IsPollInstruction(IR *ir) {
-    if (!ir) return false;
+// Heuristic to detect polling loops that don't benefit from FCACHE
+static bool IsPollInstruction(IR *irstart,IR *irend) {
+    if (!irstart || !irend) return false;
+
+    if (WriteInRange(irstart,irend)) return false;
 
     bool gotVolatileValue = false;
 
-    if (IsHwReg(ir->src) || IsHwReg(ir->dst) || IsRead(ir)) {
+    if (IsHwReg(irstart->src) || (IsHwReg(irstart->dst)&&InstrReadsDst(irstart))) {
         gotVolatileValue = true;
+    } else if (IsRead(irstart)) {
+        // Only consider it volatile if we never change the pointer
+        gotVolatileValue = !ModifiedInRange(irstart,irend,irstart->src);
     } else {
         // Too lazy to add all of these as proper OPCs, this'll do.
-        if (!InstrSetsAnyFlags(ir)) return false;
-        else if (!strncmp(ir->instr->name,"lock",4)) gotVolatileValue=true;
-        else if (!strncmp(ir->instr->name,"testp",5)) gotVolatileValue=true;
-        else if (!strncmp(ir->instr->name,"poll",4)) gotVolatileValue=true;
+        if (!InstrSetsAnyFlags(irstart)) return false;
+        else if (!strncmp(irstart->instr->name,"lock",4)) gotVolatileValue=true;
+        else if (!strncmp(irstart->instr->name,"testp",5)) gotVolatileValue=true;
+        else if (!strncmp(irstart->instr->name,"poll",4)) gotVolatileValue=true;
     }
-    if (gotVolatileValue && InstrSetsAnyFlags(ir)) return true;
-    if (gotVolatileValue && ir->next && InstrSetsDst(ir) 
-    && (ir->next->src == ir->dst || ir->next->dst == ir->dst) 
-    && InstrSetsAnyFlags(ir->next)) {
+    if (gotVolatileValue && InstrSetsAnyFlags(irstart)) return true;
+    if (gotVolatileValue && irstart->next && InstrSetsDst(irstart) 
+    && (irstart->next->src == irstart->dst || irstart->next->dst == irstart->dst) 
+    && InstrSetsAnyFlags(irstart->next)) {
         return true;
     }
     return false;
@@ -4601,7 +4607,7 @@ LoopCanBeFcached(IRList *irl, IR *root, int size_available)
     // Check for small polling loops - FCACHE-ing these is not beneficial
     // Rationale: In most cases, these either fall straight through, (fcache load overhead wasted)
     //            or end up waiting for a while (not much benefit either way)
-    if (loop_size <= 3 && IsPollInstruction(first)) return 0;
+    if (loop_size <= 3 && IsPollInstruction(first,endjmp->prev)) return 0;
 
     Operand *dst = NewHubLabel();
     newlabel = NewIR(OPC_LABEL);
