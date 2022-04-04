@@ -4480,7 +4480,11 @@ static bool IsPollInstruction(IR *ir) {
         else if (!strncmp(ir->instr->name,"poll",4)) gotVolatileValue=true;
     }
     if (gotVolatileValue && InstrSetsAnyFlags(ir)) return true;
-    if (ir->next && InstrSetsDst(ir) && (ir->next->src == ir->dst || ir->next->dst == ir->dst) && InstrSetsAnyFlags(ir->next)) return true;
+    if (gotVolatileValue && ir->next && InstrSetsDst(ir) 
+    && (ir->next->src == ir->dst || ir->next->dst == ir->dst) 
+    && InstrSetsAnyFlags(ir->next)) {
+        return true;
+    }
     return false;
 }
 
