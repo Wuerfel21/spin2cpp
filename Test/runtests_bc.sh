@@ -2,10 +2,10 @@
 
 if [ "$1" != "" ]; then
     SPIN2CPP=$1
-    FASTSPIN="$1 -g -q --interp=rom"
+    FASTSPIN="$1 -g -q --interp=rom -l"
 else
     SPIN2CPP=../build/spin2cpp
-    FASTSPIN="../build/flexspin -g -q --interp=rom"
+    FASTSPIN="../build/flexspin -g -q --interp=rom -l"
 fi
 
 PROG_ASM="$FASTSPIN -I../Lib"
@@ -85,6 +85,7 @@ do
 
   # now compile with asm
   if $PROG_ASM -o $j.binary $i; then
+    cat $j.lst
     $LOADP1 $j.binary > $j.txt
   fi
   if diff -ub Expect/$j.txt $j.txt
