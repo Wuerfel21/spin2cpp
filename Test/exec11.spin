@@ -37,7 +37,7 @@ PUB main | start,elapsed
   elapsed := elapsed - start
 
   if elapsed < 800000
-     fds.str(string("time_is_short,_as_expected", 13, 10))
+     fds.str(string("timeisshort,asexpected", 13, 10))
      fds.txflush
   else
      fds.str(string("elapsed="))
