@@ -47,4 +47,8 @@ jobs:
        run: make
      - name: test
        run: make test_spinsim
+    - uses: actions/upload-artifact@v2.1.3
+      with:
+        name: i_hate_everything
+        path: "Test/*"
 
