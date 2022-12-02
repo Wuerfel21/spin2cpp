@@ -14,17 +14,18 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@v3
         with:
           name: release_zips_win32
+      - run: |
+          sudo apt-get install tree
+          tree .
       - name: Generate description
         id: textgen
         run: |
           echo "These are the compiler binaries (only) for flexspin and spin2cpp. For a complete GUI with sample code and documentation, see the FlexProp release (https://github.com/totalspectrum/flexprop/releases)." > release_desc.md
           echo >> release_desc.md
-          git log -1 -pretty=%B | sed '1 s/.*//' >> release_desc.md
+          git log -1 --pretty=%B | sed '1 s/.*//' >> release_desc.md
           echo >> release_desc.md
           echo "See Changelog.txt for full version history." >> release_desc.md
           echo >> release_desc.md
@@ -42,7 +43,7 @@ jobs:
           bodyFile: release_desc.md
           name: ${{ steps.textgen.outputs.relTitle }}
           skipIfReleaseExists: true
-          allowUpdated: false
+          allowUpdates: false
 
 
   
