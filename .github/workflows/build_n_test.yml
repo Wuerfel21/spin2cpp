@@ -17,7 +17,9 @@ jobs:
       - uses: actions/checkout@v3
       - run: make zip
       - name: Rename ZIPs
-        run: for f in release_zips_*/*.zip; do mv "$f" "$f-win32-${{ github.ref_name }}"; done
+        run: |
+           mv flexptools.zip "flexptools-win32-${{ github.ref_name }}.zip"
+           mv spin2cpp.zip "spin2cpp-win32-${{ github.ref_name }}.zip"
       - uses: actions/upload-artifact@v3
         with:
           name: release_zips_win32
