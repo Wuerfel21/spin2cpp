@@ -7,7 +7,7 @@ on:
   pull_request:
     branches:
       - "*"
-  workfow_call:
+  workflow_call:
 
 jobs:
   build_win32:
