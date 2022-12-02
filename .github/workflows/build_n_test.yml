@@ -18,8 +18,8 @@ jobs:
       - run: make zip
       - name: Rename ZIPs
         run: |
-           mv flexptools.zip "flexptools-win32-`git describe`.zip"
-           mv spin2cpp.zip "spin2cpp-win32-`git describe`.zip"
+           mv flexptools.zip "flexptools-win32-`git describe --always`.zip"
+           mv spin2cpp.zip "spin2cpp-win32-`git describe --always`.zip"
       - uses: actions/upload-artifact@v3
         with:
           name: release_zips_win32
