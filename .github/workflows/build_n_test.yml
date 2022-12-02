@@ -1,0 +1,44 @@
+name: Spin2cpp CI
+
+on:
+  push:
+    branches:
+      - "*"
+  pull_request:
+    branches:
+      - "*"
+
+jobs:
+  build_win32:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Install MinGW
+        run: "sudo apt-get install gcc-mingw-w64-i686"
+      - uses: actions/checkout@v3
+      - run: make zip
+      - name: Rename ZIPs
+        run: for f in release_zips_*/*.zip; do mv "$f" "$f-win32-${{ github.ref_name }}"; done
+      - uses: actions/upload-artifact@v3
+        with:
+          name: release_zips_win32
+          path: "./*.zip"
+  test_offline:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+      - name: make
+        run: make
+      - name: test
+        run: make test_offline
+  test_spinsim:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: make
+        run: make
+      - name: test
+        run: make test_spinsim
+
