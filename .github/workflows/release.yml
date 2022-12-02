@@ -13,7 +13,6 @@ jobs:
     needs: build
     runs-on: ubuntu-20.04
     steps:
-      - uses: actions/checkout@v3
       - uses: actions/download-artifact@v3
         with:
           name: release_zips_win32
@@ -35,10 +34,9 @@ jobs:
           echo >> release_desc.md
 
           echo "relTitle=Spin/PASM/BASIC/C to PASM/C/binary version `echo -n  "${{ github.ref_name }}" | sed s/^v//`" >> $GITHUB_OUTPUT
-          echo "relTitle=Spin/PASM/BASIC/C to PASM/C/binary version `echo -n  "v1.2.3" | sed s/^v//`" >> $GITHUB_OUTPUT
       - uses: ncipollo/release-action@v1
         with:
-          artifacts: "release_zips_*/*.zip"
+          artifacts: "*.zip"
           artifactErrorsFailBuild: true
           bodyFile: release_desc.md
           name: ${{ steps.textgen.outputs.relTitle }}
