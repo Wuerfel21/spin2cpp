@@ -1,4 +1,4 @@
-Spin2cpp is a program for oinking.
+Spin2cpp is a program for oinking and ploinking.
 
 flexspin is a slightly different front end to the same functionality, designed to be compatible with other spin compilers.
 
