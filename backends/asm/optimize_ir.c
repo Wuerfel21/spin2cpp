@@ -3927,33 +3927,23 @@ no_getx:
                 && ir->cond == COND_Z
                 && isConstMove(ir,&tmp) && tmp == 0) {
 
-            //IR *previr = FindPrevSetterForReplace(ir,ir->dst);
-            //NOTE(NULL,"Lmao 1 %d",!!previr);
-            //if (previr && (previr->flags & FLAG_WZ) && (CanTestZero(previr->opc) || (IsImmediateVal(previr->src,0) && (previr->opc == OPC_CMP || previr->opc == OPC_CMPS)))) {
             for (IR *previr=ir->prev;previr;previr=previr->prev) {
                 if ((previr->flags & FLAG_WZ)) {
-                    if (previr->cond == COND_TRUE 
-                            && (CanTestZero(previr->opc) || (IsImmediateVal(previr->src,0) && (previr->opc == OPC_CMP || previr->opc == OPC_CMPS)))
-                            && !ModifiedInRange(previr->next,ir->prev,previr->dst)) {
-                        // Now make sure that next set is IF_NZ
-                        for (IR *nextir=ir->next;;nextir=nextir->next) {
-                            if (!nextir) goto no_movzero;
-                            if (IsDummy(nextir) || nextir->cond == COND_Z) continue;
-                            if (InstrUses(nextir,ir->dst)) goto no_movzero;
-                            if (nextir->dst == ir->dst && InstrSetsDst(nextir)) {
-                                if (nextir->cond == COND_NZ) break;
-                                else goto no_movzero;
-                            }
-                        }
-                        // We good
-                        ir->src = previr->dst;
-                        changed = 1;
-                        goto done;
+                    if (previr->cond == COND_TRUE && (CanTestZero(previr->opc) || (IsImmediateVal(previr->src,0) && (previr->opc == OPC_CMP || previr->opc == OPC_CMPS)))) {
+                        // special case where previr is also a MOV
+                        if (previr->opc == OPC_MOV && ir->dst == previr->src && !ModifiedInRange(previr->next,ir->prev,previr->src)) {
+                            ir->src = previr->src;
+                            changed = 1;
+                            goto done;
+                        } else if (!ModifiedInRange(previr->next,ir->prev,previr->dst)) {
+                            ir->src = previr->dst;
+                            changed = 1;
+                            goto done;
+                        } else break;
                     } else break;
                 }
             }
         }
-        no_movzero: ;
 
 done:
         ir = ir_next;
