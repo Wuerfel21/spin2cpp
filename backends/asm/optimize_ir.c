@@ -2826,6 +2826,30 @@ int OptimizeBranchCommonOps(IRList *irl) {
                     }
                 }
             }
+        } else if (ir->cond != COND_TRUE) {
+            // find common ops in conditional sequences
+            // downwards
+            for (IR *nextir=ir->next;nextir;nextir=nextir->next) {
+                if (IsDummy(nextir) || nextir->cond == ir->cond) {
+                    continue;
+                } else if (nextir->cond == InvertCond(ir->cond) && !InstrIsVolatile(nextir) && SameIR(nextir,ir)) {
+                    DeleteIR(irl,nextir);
+                    ir->cond = COND_TRUE;
+                    change++;
+                    break;
+                } else break;
+            }
+            // upwards
+            for (IR *previr=ir->prev;previr;previr=previr->prev) {
+                if (IsDummy(previr) || previr->cond == ir->cond) {
+                    continue;
+                } else if (previr->cond == InvertCond(ir->cond) && !InstrIsVolatile(previr) && SameIR(previr,ir)) {
+                    DeleteIR(irl,previr);
+                    ir->cond = COND_TRUE;
+                    change++;
+                    break;
+                } else break;
+            }
         }
     }
     //printf("%s post:\n",curfunc->user_name);
@@ -3890,6 +3914,46 @@ no_getx:
                 }
             }
         }
+
+        //         cmp a,#0 wz
+        //   if_z  mov b,#0
+        //   if_nz mov b,(whatever)
+        // to
+        //         cmp a,#0 wz
+        //         mov b,a
+        //   if_nz mov b,(whatever)
+        // (May in some cases promote other opts)
+        if ((curfunc->optimize_flags & OPT_EXPERIMENTAL)
+                && ir->cond == COND_Z
+                && isConstMove(ir,&tmp) && tmp == 0) {
+
+            //IR *previr = FindPrevSetterForReplace(ir,ir->dst);
+            //NOTE(NULL,"Lmao 1 %d",!!previr);
+            //if (previr && (previr->flags & FLAG_WZ) && (CanTestZero(previr->opc) || (IsImmediateVal(previr->src,0) && (previr->opc == OPC_CMP || previr->opc == OPC_CMPS)))) {
+            for (IR *previr=ir->prev;previr;previr=previr->prev) {
+                if ((previr->flags & FLAG_WZ)) {
+                    if (previr->cond == COND_TRUE 
+                            && (CanTestZero(previr->opc) || (IsImmediateVal(previr->src,0) && (previr->opc == OPC_CMP || previr->opc == OPC_CMPS)))
+                            && !ModifiedInRange(previr->next,ir->prev,previr->dst)) {
+                        // Now make sure that next set is IF_NZ
+                        for (IR *nextir=ir->next;;nextir=nextir->next) {
+                            if (!nextir) goto no_movzero;
+                            if (IsDummy(nextir) || nextir->cond == COND_Z) continue;
+                            if (InstrUses(nextir,ir->dst)) goto no_movzero;
+                            if (nextir->dst == ir->dst && InstrSetsDst(nextir)) {
+                                if (nextir->cond == COND_NZ) break;
+                                else goto no_movzero;
+                            }
+                        }
+                        // We good
+                        ir->src = previr->dst;
+                        changed = 1;
+                        goto done;
+                    } else break;
+                }
+            }
+        }
+        no_movzero: ;
 
 done:
         ir = ir_next;
