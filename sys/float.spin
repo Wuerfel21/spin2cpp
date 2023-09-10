@@ -220,7 +220,7 @@ pri _float_getpowten(x) | midf, lo, hi, mid, t, sanity
       return (midf, mid)
   return (_float_pow_n(1.0, 10.0, hi), hi)
 
-pri file "libsys/fmt.c" _basic_print_float(h, f, fmtparam, ch)
+pri file "libsys/basic_fmt.c" _basic_print_float(h, f, fmtparam, ch)
 
 ' convert string to integer
 pri __builtin_atoi(s = "0", base=0) : r = long | c, negate, digit

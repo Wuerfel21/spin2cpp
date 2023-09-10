@@ -1,4 +1,6 @@
 #include <stdint.h>
+#include <stdarg.h>
+#include <compiler.h>
 
 #pragma once
 
